@@ -9,32 +9,59 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Download source
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Configure Visual Studio
+      - name: Find Visual Studio
+        id: vs
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 
           if (-not $vs) {
-            throw "Visual Studio C++ tools not found"
+            throw "MSVC C++ Build Tools not found"
           }
 
-          $file = "src/build.bat"
-          $lines = Get-Content $file
-          $lines[8] = "call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" > nul 2>&1"
-          Set-Content $file $lines -Encoding ascii
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
 
-      - name: Compile DLL
+          if (-not (Test-Path $vcvars)) {
+            throw "vcvars64.bat not found"
+          }
+
+          "vcvars=$vcvars" >> $env:GITHUB_OUTPUT
+
+      - name: Compile QuaFind DLL
         shell: cmd
+        working-directory: src
         run: |
-          echo.| call src\build.bat
-          if not exist "src\QuaFind.dll" exit /b 1
+          call "${{ steps.vs.outputs.vcvars }}"
+          if errorlevel 1 exit /b 1
+
+          cl.exe /nologo /EHa /MD /O2 /std:c++17 /W0 /LD ^
+            dllmain.cpp ^
+            imgui\imgui.cpp ^
+            imgui\imgui_draw.cpp ^
+            imgui\imgui_tables.cpp ^
+            imgui\imgui_widgets.cpp ^
+            imgui\imgui_impl_win32.cpp ^
+            imgui\imgui_impl_dx11.cpp ^
+            hook\src\buffer.c ^
+            hook\src\hook.c ^
+            hook\src\trampoline.c ^
+            hook\src\hde\hde32.c ^
+            hook\src\hde\hde64.c ^
+            /Fe:QuaFind.dll ^
+            /link /PDB:QuaFind.pdb ^
+            user32.lib d3d11.lib dxgi.lib dwmapi.lib shell32.lib gdi32.lib ole32.lib windowscodecs.lib d3dcompiler.lib psapi.lib
+
+          if errorlevel 1 exit /b 1
+          if not exist QuaFind.dll exit /b 1
 
       - name: Upload compiled DLL
         uses: actions/upload-artifact@v4
         with:
           name: QuaFind-Compiled
           path: src/QuaFind.dll
+          if-no-files-found: error
